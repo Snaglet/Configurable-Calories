@@ -132,7 +132,7 @@ async function analyze(apiKey, imageData, description) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method:"POST",
     headers:{"Content-Type":"application/json","Authorization":`Bearer ${apiKey}`},
-    body:JSON.stringify({ model:"gpt-4o", messages:[{role:"system",content:"You are an expert nutritionist. Return ONLY raw JSON. For each ingredient include servings (default 1)."},{role:"user",content:contentArr}], max_tokens:1000 })
+    body:JSON.stringify({ model:"gpt-4.5-preview", messages:[{role:"system",content:"You are an expert nutritionist. Return ONLY raw JSON. For each ingredient include servings (default 1)."},{role:"user",content:contentArr}], max_tokens:1000 })
   });
   if (!res.ok) { let m=`API error ${res.status}`; try{const e=await res.json();m=e.error?.message||m;}catch{} if(res.status===401)throw new Error("Invalid API key"); if(res.status===429)throw new Error("Rate limited"); throw new Error(m); }
   const data = await res.json();
@@ -176,7 +176,11 @@ Always respond in JSON only.`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages",{
     method:"POST",
-    headers:{"Content-Type":"application/json"},
+    headers:{
+      "Content-Type":"application/json",
+      "anthropic-dangerous-direct-browser-access":"true",
+      "anthropic-version":"2023-06-01",
+    },
     body:JSON.stringify({
       model:"claude-sonnet-4-20250514",
       max_tokens:800,
@@ -203,7 +207,27 @@ function useWebSpeech(onUpdate) {
   const recRef=useRef(null);
   const [listening,setListening]=useState(false);
   const supported=!!(window.SpeechRecognition||window.webkitSpeechRecognition);
-  const start=useCallback(()=>{if(!supported)return;try{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;const rec=new SR();recRef.current=rec;rec.continuous=true;rec.interimResults=true;rec.lang="en-US";let final="";rec.onresult=e=>{let interim="";for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0].transcript;if(e.results[i].isFinal)final+=t+" ";else interim=t;}onUpdate(final+interim);};rec.onerror=()=>setListening(false);rec.onend=()=>setListening(false);rec.start();setListening(true);}catch{setListening(false);}},[supported,onUpdate]);
+  // Pre-request mic permission once so iOS doesn't ask every time
+  const permissionAsked=useRef(false);
+  const ensurePermission=useCallback(async()=>{
+    if(permissionAsked.current)return;
+    permissionAsked.current=true;
+    try{const s=await navigator.mediaDevices.getUserMedia({audio:true});s.getTracks().forEach(t=>t.stop());}catch{}
+  },[]);
+  const start=useCallback(()=>{
+    if(!supported)return;
+    ensurePermission();
+    try{
+      const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+      const rec=new SR();recRef.current=rec;
+      rec.continuous=true;rec.interimResults=true;rec.lang="en-US";
+      let final="";
+      rec.onresult=e=>{let interim="";for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0].transcript;if(e.results[i].isFinal)final+=t+" ";else interim=t;}onUpdate(final+interim);};
+      rec.onerror=()=>setListening(false);
+      rec.onend=()=>setListening(false);
+      rec.start();setListening(true);
+    }catch{setListening(false);}
+  },[supported,onUpdate,ensurePermission]);
   const stop=useCallback(()=>{try{recRef.current?.stop();}catch{}setListening(false);},[]);
   return{listening,supported,start,stop};
 }
@@ -432,18 +456,26 @@ function WaterTrackerWidget() {
 }
 
 function WeightWidget({onOpenLog}) {
-  const wlog=loadWeights();
+  const [wlog,setWlog]=useState(()=>loadWeights());
   const [editing,setEditing]=useState(false);
   const [val,setVal]=useState("");
   const latest=wlog.length>0?wlog[wlog.length-1].value:0;
-  const commit=()=>{const n=parseFloat(val);if(!isNaN(n)&&n>0){const entry={date:fmtKey(new Date()),value:n};const next=[...wlog.filter(w=>w.date!==entry.date),entry].sort((a,b)=>a.date.localeCompare(b.date));saveWeights(next);}setEditing(false);};
-  // Last 6 months
+  const commit=()=>{
+    const n=parseFloat(val);
+    if(!isNaN(n)&&n>0){
+      const entry={date:fmtKey(new Date()),value:n};
+      const next=[...wlog.filter(w=>w.date!==entry.date),entry].sort((a,b)=>a.date.localeCompare(b.date));
+      setWlog(next);saveWeights(next);
+    }
+    setEditing(false);
+  };
+  // Last 6 months with tight range
   const sixMonthsAgo=new Date();sixMonthsAgo.setMonth(sixMonthsAgo.getMonth()-6);
-  const chartData=wlog.filter(w=>new Date(w.date)>=sixMonthsAgo);
+  const chartData=wlog.filter(w=>new Date(w.date+"T12:00:00")>=sixMonthsAgo);
 
   return <Card style={{padding:"14px 16px"}}>
     <div style={{display:"flex",alignItems:"center",gap:12}}>
-      <div style={{flex:1}}>
+      <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:10,color:C.dim,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>Weight</div>
         <div style={{display:"flex",alignItems:"baseline",gap:5}}>
           {editing
@@ -451,7 +483,7 @@ function WeightWidget({onOpenLog}) {
             :<>
               <span style={{fontSize:22,fontWeight:200,color:C.text,letterSpacing:"-1px",cursor:"pointer"}} onClick={()=>{setVal(latest>0?String(latest):"");setEditing(true);}}>{latest>0?latest:"—"}</span>
               <span style={{fontSize:11,color:C.dim,fontWeight:300}}>lbs</span>
-              <span onClick={()=>{setVal(latest>0?String(latest):"");setEditing(true);}} style={{cursor:"pointer",color:C.dim,marginLeft:2}}><Ic.Edit s={11}/></span>
+              <span onClick={()=>{setVal(latest>0?String(latest):"");setEditing(true);}} style={{cursor:"pointer",color:C.dim,marginLeft:4}}><Ic.Edit s={11}/></span>
             </>
           }
         </div>
@@ -459,7 +491,13 @@ function WeightWidget({onOpenLog}) {
           View history <Ic.ChevronRight s={11}/>
         </button>
       </div>
-      {chartData.length>=2&&<WeightSparkline data={chartData} width={110} height={36}/>}
+      {/* Always show chart area — shows sparkline if data exists, placeholder if not */}
+      <div style={{width:120,height:48,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        {chartData.length>=2
+          ? <WeightSparkline data={chartData} width={120} height={48}/>
+          : <span style={{fontSize:10,color:C.dim,textAlign:"center",lineHeight:1.4}}>Log weight<br/>to see trend</span>
+        }
+      </div>
     </div>
   </Card>;
 }
@@ -667,7 +705,12 @@ function HomeScreen({onOpenCamera,onOpenVoice,onSelectMeal,onAddWorkout,onOpenSe
     reader.onload=ev=>{const img=new Image();img.onload=()=>{const MAX=1600;let w=img.width,h=img.height;if(w>MAX||h>MAX){const s=Math.min(MAX/w,MAX/h);w=Math.round(w*s);h=Math.round(h*s);}const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;canvas.getContext("2d").drawImage(img,0,0,w,h);const dataUrl=canvas.toDataURL("image/jpeg",.88);onOpenCamera({base64:dataUrl.split(",")[1],mimeType:"image/jpeg"},dataUrl);};img.src=ev.target.result;};
     reader.readAsDataURL(f);e.target.value="";
   };
-  const shift=days=>{const d=new Date(date);d.setDate(d.getDate()+days);setDate(d);};
+  const shift=days=>{
+    const d=new Date(date);d.setDate(d.getDate()+days);
+    // Prevent navigating to future dates
+    if(days>0 && fmtKey(d)>fmtKey(new Date())) return;
+    setDate(d);
+  };
   const ctx={meals,goal,baseGoal,setBaseGoal,onSelectMeal,onAddWorkout,onOpenVoice,fileRef,widgetConfig,onOpenWeightLog};
   const visibleOrdered=widgetConfig.order.filter(id=>widgetConfig.visible.includes(id));
 
@@ -687,7 +730,7 @@ function HomeScreen({onOpenCamera,onOpenVoice,onSelectMeal,onAddWorkout,onOpenSe
           <div style={{fontSize:13,fontWeight:400,color:C.text}}>{fmtDisplay(date)}</div>
           {!isToday(date)&&<button style={{background:C.aDim,border:`1px solid ${C.aMid}`,color:C.accent,borderRadius:20,fontSize:9,fontWeight:500,padding:"2px 8px",marginTop:1}} onClick={()=>setDate(new Date())}>Today</button>}
         </div>
-        <button style={{width:30,height:30,borderRadius:8,background:C.hover,border:`1px solid ${C.border}`,color:C.sub,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>shift(1)}><Ic.Right/></button>
+        <button style={{width:30,height:30,borderRadius:8,background:C.hover,border:`1px solid ${C.border}`,color:isToday(date)?C.border:C.sub,display:"flex",alignItems:"center",justifyContent:"center",opacity:isToday(date)?0.3:1}} onClick={()=>shift(1)} disabled={isToday(date)}><Ic.Right/></button>
       </div>
     </div>
     <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleFile}/>
@@ -827,29 +870,57 @@ function DetailScreen({meal,onBack,onUpdate,onDelete,apiKey,onOpenIngredient}) {
     const db=loadFoodDB();delete db[ingName?.toLowerCase()?.trim()];saveFoodDB(db);
   };
 
-  // Swipeable ingredient row
-  function IngRow({ing,idx,onTap,onDelete}) {
+  // Swipeable ingredient row with inline calorie + servings editing
+  function IngRow({ing,idx,onTap,onDelete,onInlineEdit}) {
     const [sx,setSx]=useState(0);const [sw,setSw]=useState(false);
-    const tx=useRef(0),ty=useRef(0);
-    const onTS=e=>{tx.current=e.touches[0].clientX;ty.current=e.touches[0].clientY;setSw(false);};
-    const onTM=e=>{const dx=e.touches[0].clientX-tx.current;const dy=Math.abs(e.touches[0].clientY-ty.current);if(dy>20&&Math.abs(dx)<20)return;if(dx<0){setSw(true);setSx(Math.max(dx,-88));}};
+    const [editingCal,setEditingCal]=useState(false);
+    const [editingSrv,setEditingSrv]=useState(false);
+    const [calVal,setCalVal]=useState(String(ing.calories||0));
+    const [srvVal,setSrvVal]=useState(String(ing.servings||1));
+    const txRef2=useRef(0),tyRef2=useRef(0);
+    const onTS=e=>{txRef2.current=e.touches[0].clientX;tyRef2.current=e.touches[0].clientY;setSw(false);};
+    const onTM=e=>{const dx=e.touches[0].clientX-txRef2.current;const dy=Math.abs(e.touches[0].clientY-tyRef2.current);if(dy>20&&Math.abs(dx)<20)return;if(dx<0){setSw(true);setSx(Math.max(dx,-88));}};
     const onTE=()=>{if(sx<=-80)onDelete();else{setSx(0);setSw(false);}};
+
+    const commitCal=()=>{const n=parseFloat(calVal);if(!isNaN(n)&&n>=0)onInlineEdit({...ing,calories:n});else setCalVal(String(ing.calories||0));setEditingCal(false);};
+    const commitSrv=()=>{
+      const n=parseFloat(srvVal);
+      if(!isNaN(n)&&n>0&&ing.servings>0){
+        const ratio=n/ing.servings;
+        onInlineEdit({...ing,servings:n,calories:Math.round((ing.calories||0)*ratio),proteinG:parseFloat(((ing.proteinG||0)*ratio).toFixed(1)),carbsG:parseFloat(((ing.carbsG||0)*ratio).toFixed(1)),fatG:parseFloat(((ing.fatG||0)*ratio).toFixed(1)),sugarG:parseFloat(((ing.sugarG||0)*ratio).toFixed(1)),fiberG:parseFloat(((ing.fiberG||0)*ratio).toFixed(1))});
+      } else setSrvVal(String(ing.servings||1));
+      setEditingSrv(false);
+    };
+
     return <div style={{position:"relative",borderBottom:`1px solid ${C.border}`}}>
       <div style={{position:"absolute",inset:0,background:C.red,display:"flex",alignItems:"center",justifyContent:"flex-end",paddingRight:16}}>
         <span style={{color:"#fff",fontSize:11,fontWeight:500}}>Delete</span>
       </div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",background:C.surface,transform:`translateX(${sx}px)`,transition:sw?"none":"transform .25s ease",cursor:"pointer"}}
-        onClick={()=>sx===0&&onTap()} onTouchStart={onTS} onTouchMove={onTM} onTouchEnd={onTE}>
-        <div style={{flex:1,minWidth:0}}>
-          <span style={{fontSize:13,fontWeight:300,color:C.text}}>{ing.name}</span>
-          {ing.servings>0&&<span style={{fontSize:10,color:C.dim,marginLeft:6}}>{ing.servings} serving{ing.servings!==1?"s":""}</span>}
-        </div>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{textAlign:"right"}}>
-            <div style={{fontSize:12,fontWeight:400,color:C.accent}}>{ing.calories} kcal</div>
-            {ing.proteinG>0&&<div style={{fontSize:10,color:C.blue}}>{ing.proteinG}g P</div>}
+      <div style={{display:"flex",alignItems:"center",gap:0,background:C.surface,transform:`translateX(${sx}px)`,transition:sw?"none":"transform .25s ease"}}
+        onTouchStart={onTS} onTouchMove={onTM} onTouchEnd={onTE}>
+        {/* Tap name area to open full detail */}
+        <div style={{flex:1,minWidth:0,padding:"10px 10px 10px 14px",cursor:"pointer"}} onClick={()=>sx===0&&!editingCal&&!editingSrv&&onTap()}>
+          <div style={{fontSize:13,fontWeight:300,color:C.text,marginBottom:2}}>{ing.name}</div>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {/* Inline servings edit */}
+            <div style={{display:"flex",alignItems:"center",gap:3,background:C.hover,borderRadius:6,padding:"2px 6px"}} onClick={e=>{e.stopPropagation();setEditingSrv(true);setSrvVal(String(ing.servings||1));}}>
+              {editingSrv
+                ?<input autoFocus type="number" inputMode="decimal" style={{width:36,background:"transparent",border:"none",borderBottom:`1px solid ${C.accent}`,color:C.accent,fontSize:11,textAlign:"center",outline:"none",fontFamily:"'Inter',sans-serif"}} value={srvVal} onChange={e=>setSrvVal(e.target.value)} onBlur={commitSrv} onKeyDown={e=>e.key==="Enter"&&commitSrv()} onClick={e=>e.stopPropagation()}/>
+                :<span style={{fontSize:11,color:C.dim}}>{ing.servings||1} srv</span>
+              }
+            </div>
+            <Ic.ChevronRight s={10}/>
+            <span style={{fontSize:10,color:C.dim}}>tap for nutrition</span>
           </div>
-          <Ic.ChevronRight s={14}/>
+        </div>
+        {/* Inline calorie edit */}
+        <div style={{padding:"10px 14px 10px 8px",display:"flex",alignItems:"center",gap:4,cursor:"pointer",flexShrink:0}} onClick={e=>{e.stopPropagation();setEditingCal(true);setCalVal(String(ing.calories||0));}}>
+          {editingCal
+            ?<input autoFocus type="number" inputMode="numeric" style={{width:54,background:"transparent",border:"none",borderBottom:`1.5px solid ${C.accent}`,color:C.accent,fontSize:13,fontWeight:400,textAlign:"right",outline:"none",fontFamily:"'Inter',sans-serif"}} value={calVal} onChange={e=>setCalVal(e.target.value)} onBlur={commitCal} onKeyDown={e=>e.key==="Enter"&&commitCal()} onClick={e=>e.stopPropagation()}/>
+            :<span style={{fontSize:13,fontWeight:400,color:C.accent}}>{ing.calories}</span>
+          }
+          <span style={{fontSize:9,color:"rgba(74,230,138,0.5)"}}>kcal</span>
+          {!editingCal&&<Ic.Edit s={10}/>}
         </div>
       </div>
     </div>;
@@ -885,23 +956,16 @@ function DetailScreen({meal,onBack,onUpdate,onDelete,apiKey,onOpenIngredient}) {
           </div>
         </div>
 
-        {!isW&&macros.length>0&&<Card style={{marginBottom:10}}>
-          <div style={{padding:"8px 14px 4px",borderBottom:`1px solid ${C.border}`}}><p style={{fontSize:9,fontWeight:500,color:C.dim,textTransform:"uppercase",letterSpacing:"0.8px"}}>Nutrition</p></div>
-          {macros.map(m=><div key={m.l} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 14px",borderBottom:`1px solid ${C.border}`}}>
-            <span style={{fontSize:13,fontWeight:300,color:C.text}}>{m.l}</span>
-            <span style={{fontSize:13,fontWeight:400,color:m.c}}>{m.v}g</span>
-          </div>)}
-        </Card>}
-
-        {!isW&&<Card style={{marginBottom:12}}>
+        {!isW&&<Card style={{marginBottom:10}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 14px 4px",borderBottom:`1px solid ${C.border}`}}>
-            <p style={{fontSize:9,fontWeight:500,color:C.dim,textTransform:"uppercase",letterSpacing:"0.8px"}}>Breakdown — tap to view/edit</p>
+            <p style={{fontSize:9,fontWeight:500,color:C.dim,textTransform:"uppercase",letterSpacing:"0.8px"}}>Breakdown — tap name for nutrition detail</p>
             {!addingVoice&&<button style={{display:"flex",alignItems:"center",gap:3,background:C.aDim,border:`1px solid ${C.aMid}`,borderRadius:7,color:C.accent,fontSize:10,fontWeight:400,padding:"3px 8px"}} onClick={()=>{setAddingVoice(true);setAddTranscript("");setAddError("");setTimeout(()=>speech.start(),100);}}><Ic.Mic s={10}/> Add item</button>}
           </div>
           {ings.map((ing,idx)=>(
             <IngRow key={idx} ing={ing} idx={idx}
               onTap={()=>onOpenIngredient(ing,idx,(updatedIng)=>handleIngredientSave(idx,updatedIng),()=>handleIngredientDelete(idx,ing.name))}
-              onDelete={()=>handleIngredientDelete(idx,ing.name)}/>
+              onDelete={()=>handleIngredientDelete(idx,ing.name)}
+              onInlineEdit={(updatedIng)=>handleIngredientSave(idx,updatedIng)}/>
           ))}
           {ings.length===0&&<div style={{padding:"16px 14px",color:C.dim,fontSize:13}}>No ingredients listed.</div>}
           {addingVoice&&<div style={{padding:"10px 13px",borderTop:`1px solid ${C.border}`}}>
@@ -912,6 +976,14 @@ function DetailScreen({meal,onBack,onUpdate,onDelete,apiKey,onOpenIngredient}) {
               <button style={{flex:2,background:addLoading?C.hover:C.accent,borderRadius:9,border:"none",color:addLoading?C.accent:C.bg,fontSize:12,fontWeight:500,padding:"9px",opacity:addTranscript.trim()?1:0.35}} onClick={mergeItems} disabled={!addTranscript.trim()||addLoading}>{addLoading?"Calculating…":"Add →"}</button>
             </div>
           </div>}
+        </Card>}
+
+        {!isW&&macros.length>0&&<Card style={{marginBottom:12}}>
+          <div style={{padding:"8px 14px 4px",borderBottom:`1px solid ${C.border}`}}><p style={{fontSize:9,fontWeight:500,color:C.dim,textTransform:"uppercase",letterSpacing:"0.8px"}}>Nutrition Totals</p></div>
+          {macros.map(m=><div key={m.l} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 14px",borderBottom:`1px solid ${C.border}`}}>
+            <span style={{fontSize:13,fontWeight:300,color:C.text}}>{m.l}</span>
+            <span style={{fontSize:13,fontWeight:400,color:m.c}}>{m.v}g</span>
+          </div>)}
         </Card>}
       </div>
     </div>
